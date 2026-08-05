@@ -1,7 +1,7 @@
 edition: 3.0.0
 access: "{{ access }}"
 vars:
-  fcDomainManagerFunctionName: "{{ fcDomainManagerFunctionName }}"
+  certUpdaterFunctionName: "{{ certUpdaterFunctionName }}"
   certGeneratorFunctionName: "{{ certGeneratorFunctionName }}"
   role: "{{ role }}"
 resources:
@@ -51,12 +51,14 @@ resources:
         asyncTask: true
         maxAsyncEventAgeInSeconds: 86400
         maxAsyncRetryAttempts: 3
-  fc-domain-manager-hz:
+  cert-updater-hz:
     component: fc3
     actions:
       pre-deploy:
         - run: export PATH=/usr/local/versions/node/v20.8.1/bin:$PATH && npm install
-          path: ./fc-domain-manager
+          path: ./cert-updater
+        - run: export PATH=/usr/local/versions/node/v20.8.1/bin:$PATH && npm run build
+          path: ./cert-updater
     props:
       region: cn-hangzhou
       handler: index.handler
@@ -66,12 +68,12 @@ resources:
       memorySize: 4096
       diskSize: 10240
       internetAccess: true
-      functionName: ${vars.fcDomainManagerFunctionName}
+      functionName: ${vars.certUpdaterFunctionName}
       runtime: nodejs20
       environmentVariables:
         CUSTOM_DOMAIN_REGIONS: cn-beijing,cn-hangzhou,cn-shanghai,cn-qingdao,cn-zhangjiakou,cn-huhehaote,cn-shenzhen,cn-chengdu
         CERT_GENERATOR_FUNCTION_NAME: ${vars.certGeneratorFunctionName}
-      code: ./fc-domain-manager
+      code: ./cert-updater
       triggers:
         - triggerConfig:
             payload: ""
@@ -80,7 +82,7 @@ resources:
           triggerName: time-trigger
           qualifier: LATEST
           triggerType: timer
-  fc-domain-manager-sg:
+  cert-updater-sg:
     component: fc3
     props:
       region: ap-southeast-1
@@ -91,12 +93,12 @@ resources:
       memorySize: 4096
       diskSize: 10240
       internetAccess: true
-      functionName: ${vars.fcDomainManagerFunctionName}
+      functionName: ${vars.certUpdaterFunctionName}
       runtime: nodejs20
       environmentVariables:
         CUSTOM_DOMAIN_REGIONS: cn-hongkong,ap-southeast-1,ap-southeast-3,ap-southeast-5,ap-southeast-7,ap-northeast-1,ap-northeast-2,eu-central-1,eu-west-1,us-west-1,us-east-1
         CERT_GENERATOR_FUNCTION_NAME: ${vars.certGeneratorFunctionName}
-      code: ./fc-domain-manager
+      code: ./cert-updater
       triggers:
         - triggerConfig:
             payload: ""

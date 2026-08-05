@@ -1,0 +1,16 @@
+{
+  "scripts": {
+    "build": "bun build --production --target=node --pacakges=external --external=* --outfile=./index.js ./index.ts"
+  },
+  "dependencies": {
+    "@alicloud/cas20200407": "^1.2.0",
+    "@alicloud/cdn20180510": "^9.2.0",
+    "@alicloud/darabonba-stream": "^0.0.2",
+    "@alicloud/fc20230330": "^4.1.0",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/lodash": "^4.17.25"
+  }
+}
