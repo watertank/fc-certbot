@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build": "bun build --production --target=node --format=cjs --pacakges=external --external=* --outfile=./index.js ./index.ts"
+    "build": "bun build --production --target=node --format=cjs --packages=external --outfile=./index.js ./index.ts"
   },
   "dependencies": {
     "@alicloud/cas20200407": "^1.2.0",
