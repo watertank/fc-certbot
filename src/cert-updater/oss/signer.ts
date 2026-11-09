@@ -1,5 +1,7 @@
 // OSS V4 request signer (Signature Version 4 / OSS4-HMAC-SHA256).
 // Translated from pkg/sdk3rd/alibabacloud/oss/signer.go.
+// Canonical query/header handling has been aligned with the official
+// alibabacloud-oss-go-sdk-v2 signer (and ali-oss signUtils).
 //
 // API signing docs:
 // https://help.aliyun.com/zh/oss/developer-reference/recommend-to-use-signature-version-4
@@ -18,6 +20,36 @@ const SIGN_ALGORITHM = "OSS4-HMAC-SHA256";
 
 function hmacSha256(key: string | Buffer, data: string | Buffer): Buffer {
   return createHmac("sha256", key).update(data).digest();
+}
+
+/**
+ * Builds the canonical query string from the already-encoded raw query.
+ * Matching the official SDK, keys are sorted as-is (not decoded first), and
+ * empty values are rendered as a bare key (`?acl` -> `acl`).
+ */
+function buildCanonicalQueryString(url: URL): string {
+  const query = url.search.replace(/^\?/, "").replace(/\+/g, "%20");
+  const values = new Map<string, string>();
+  const params: string[] = [];
+
+  for (const part of query.split("&")) {
+    if (part === "") {
+      continue;
+    }
+    const separator = part.indexOf("=");
+    const key = separator === -1 ? part : part.slice(0, separator);
+    const value = separator === -1 ? "" : part.slice(separator + 1);
+    values.set(key, value);
+    params.push(key);
+  }
+
+  params.sort();
+  return params
+    .map((key) => {
+      const value = values.get(key) ?? "";
+      return value === "" ? key : `${key}=${value}`;
+    })
+    .join("&");
 }
 
 /** Equivalent of Go's escapeQuery (url.QueryEscape with "+" replaced by "%20"). */
@@ -91,51 +123,32 @@ export class Signer {
       canonicalUrl = escapePath(requestResStr);
     }
 
-    // Canonical query string: sorted keys, first value per key.
-    let canonicalQueryStr = "";
-    const queryKeys = [...req.url.searchParams.keys()].sort();
-    for (let i = 0; i < queryKeys.length; i++) {
-      if (i > 0) {
-        canonicalQueryStr += "&";
-      }
-      const key = queryKeys[i]!;
-      const value = req.url.searchParams.get(key) ?? "";
-      if (value === "") {
-        canonicalQueryStr += escapeQuery(key);
-      } else {
-        canonicalQueryStr += escapeQuery(key) + "=" + escapeQuery(value);
+    // Canonical query string: built from the raw (already encoded) query,
+    // sorted by key. This matches the official OSS SDK and, for ordinary
+    // subresource queries such as `?cname&comp=list`, ali-oss signUtils too.
+    const canonicalQueryStr = buildCanonicalQueryString(req.url);
+
+    if (!req.headers.has("X-OSS-Date")) {
+      req.headers.set("X-OSS-Date", requestDateStr);
+    }
+    if (!req.headers.has("X-OSS-Content-SHA256")) {
+      req.headers.set("X-OSS-Content-SHA256", "UNSIGNED-PAYLOAD");
+    }
+
+    const signedHeaderKeys = new Set<string>();
+    for (const key of req.headers.keys()) {
+      const lower = key.toLowerCase();
+      if (lower.startsWith("x-oss-") || lower === "content-type" || lower === "content-md5") {
+        signedHeaderKeys.add(lower);
       }
     }
 
     let canonicalHeaders = "";
-    if (req.headers.size > 0) {
-      if (!req.headers.has("X-OSS-Date")) {
-        req.headers.set("X-OSS-Date", requestDateStr);
-      }
-      if (!req.headers.has("X-OSS-Content-SHA256")) {
-        req.headers.set("X-OSS-Content-SHA256", "UNSIGNED-PAYLOAD");
-      }
-
-      const keys: string[] = [];
-      for (const key of req.headers.keys()) {
-        const lower = key.toLowerCase();
-        if (lower.startsWith("x-oss-")) {
-          keys.push(lower);
-        }
-        if (lower === "content-type" || lower === "content-md5") {
-          keys.push(lower);
-        }
-      }
-      keys.sort();
-
-      for (let i = 0; i < keys.length; i++) {
-        if (i > 0) {
-          canonicalHeaders += "\n";
-        }
-        const value = (req.headers.get(keys[i]!) ?? "").trim();
-        canonicalHeaders += keys[i] + ":" + value;
-      }
-      canonicalHeaders += "\n";
+    const sortedHeaderKeys = [...signedHeaderKeys].sort();
+    for (const key of sortedHeaderKeys) {
+      const values = req.headers.toMap().get(key) ?? [];
+      const value = values.map((v) => v.trim()).join(",");
+      canonicalHeaders += key + ":" + value + "\n";
     }
 
     const hashedPayload = req.headers.get("X-OSS-Content-SHA256") ?? "UNSIGNED-PAYLOAD";
@@ -152,7 +165,7 @@ export class Signer {
     const kSigning = hmacSha256(kService, "aliyun_v4_request");
     const signature = hmacSha256(kSigning, stringToSign).toString("hex").toLowerCase();
 
-    const authorization = `${SIGN_ALGORITHM} Credential=${this.accessKeyId}/${scope}, Signature=${signature}`;
+    const authorization = `${SIGN_ALGORITHM} Credential=${this.accessKeyId}/${scope},Signature=${signature}`;
 
     req.headers.set("Authorization", authorization);
     req.headers.set("Date", headerDateStr);
