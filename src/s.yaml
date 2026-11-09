@@ -9,6 +9,8 @@ resources:
     component: fc3
     actions:
       pre-deploy:
+        - run: rm -fr python
+          path: ./cert-generator
         - run: mkdir python
           path: ./cert-generator
         - run: export PATH=/usr/local/envs/py310/bin:$PATH && pip3 install -r requirements.txt -t ./python
