@@ -8,6 +8,7 @@ import { Config } from "@alicloud/openapi-client";
 import Util, { RuntimeOptions } from "@alicloud/tea-util";
 import Stream from "@alicloud/darabonba-stream";
 import _ from "lodash";
+import { Client as OssClient, type ListBucketCnameCname, type ListBucketCnameResponse, type PutBucketCnameRequest } from "./oss";
 
 const runtime = new RuntimeOptions({});
 
@@ -16,7 +17,7 @@ let CERT_GENERATOR_FUNCTION_NAME: string;
 type Credentials = {
   accessKeyId: string;
   accessKeySecret: string;
-  securityToken: string;
+  securityToken?: string;
 }
 
 export type FcContext = {
@@ -50,6 +51,16 @@ function getCdnClient(context: FcContext) {
       connectTimeout: 1000000,
     })
   );
+}
+
+function getOssClient(regionId: string, context: FcContext) {
+  let endpoint = `oss-${regionId}${(regionId === context.region) ? "-internal" : ""}.aliyuncs.com`;
+  return new OssClient({
+    accessKeyId: context.credentials.accessKeyId,
+    accessKeySecret: context.credentials.accessKeySecret,
+    region: regionId,
+    endpoint: endpoint,
+  });
 }
 
 function getFcClient(regionId: string, context: FcContext) {
@@ -283,6 +294,35 @@ async function updateCdnDomain(domainName: string, certName: string, certInfo: G
   console.log(`cdn: update cert for ${domainName} success`);
 }
 
+function willExpireWithin(a: Date, days: number, now: Date = new Date()): boolean {
+  const ta = a.getTime();
+  const tn = now.getTime();
+  if (Number.isNaN(ta) || Number.isNaN(tn)) {
+    throw new TypeError('Invalid Date');
+  }
+  const DAY = 24 * 60 * 60 * 1000;
+  const expireAt = ta + days * DAY;   // 过期时间点
+  return expireAt > tn && expireAt - tn <= days * DAY;
+}
+
+function shouldUpdateCdnDomain(cdnDomain: CdnDomain, certInfo: GetUserCertificateDetailResponse): boolean {
+  if (cdnDomain.certInfo.certStatus === "expired") {
+    return true;
+  }
+  if (cdnDomain.certInfo.certExpireTime) {
+    const expireTime = new Date(cdnDomain.certInfo.certExpireTime);
+    // NOTE: 3 < 7 days in cert-generator(check_if_less_than_seven_days)
+    if (willExpireWithin(expireTime, 3)) {
+      return true;
+    }
+  }
+  // XXX: always equals
+  if (cdnDomain.certDetail!.cert !== certInfo.body!.cert) {
+    return true;
+  }
+  return false;
+}
+
 async function updateCdnDomains(certName: string, cdnDomains: CdnDomain[], context: FcContext) {
   const fcClient = getFcClient(context.region, context);
   const casClient = getCasClient(context);
@@ -324,7 +364,7 @@ async function updateCdnDomains(certName: string, cdnDomains: CdnDomain[], conte
       await Promise.all([
         ...cdnDomains
           .filter((cdnDomain) => {
-            if (cdnDomain.certDetail!.cert !== certInfo.body!.cert) {
+            if (shouldUpdateCdnDomain(cdnDomain, certInfo)) {
               return true;
             } else {
               console.log(
@@ -373,9 +413,122 @@ async function handleCdnDomains(context: FcContext) {
   await Promise.all(requests);
 }
 
+async function listOssDomains(regionId: string, context: FcContext) {
+  const client = getOssClient(regionId, context);
+  const result = await client.listBucketCname();
+  return result.cname || [];
+}
+
+async function updateOssDomain(domainName: string, certName: string, certInfo: GetUserCertificateDetailResponse, context: FcContext) {
+  const client = getOssClient("", context);
+  const request: PutBucketCnameRequest = {
+    cname: {
+      domain: domainName,
+    }
+  };
+  await client.putBucketCname(request);
+  console.log(`oss: update cert for ${domainName} success`);
+}
+
+async function updateOssDomains(certName: string, domains: ListBucketCnameCname[], context: FcContext) {
+  const fcClient = getFcClient(context.region, context);
+  const casClient = getCasClient(context);
+  const domainNames = _.uniq(
+    domains.map((domain) => domain.domain!)
+  );
+  let domainName = domainNames[0]!;
+  if (certName.startsWith(CERT_WILDCARD_PREFIX)) {
+    const wildcardPosition = Number(certName.split("-")[4]);
+    domainName = `*.${domainName
+      .split(".")
+      .slice(-1 * (wildcardPosition - 1))
+      .join(".")}`;
+  }
+  const result = await fcClient.invokeFunctionWithOptions(
+    CERT_GENERATOR_FUNCTION_NAME,
+    new InvokeFunctionRequest({
+      body: Stream.readFromString(
+        JSON.stringify({
+          certName,
+          domainName,
+        })
+      ),
+    }),
+    new InvokeFunctionHeaders({
+      xFcInvocationType: "Sync",
+    }),
+    runtime
+  );
+  if (!result.headers!["x-fc-error-type"]) {
+    const certId = await Util.readAsString(result.body!);
+    if (certId) {
+      const certInfo = await casClient.getUserCertificateDetailWithOptions(
+        new GetUserCertificateDetailRequest({
+          certId: certId,
+        }),
+        runtime
+      );
+      await Promise.all([
+        ...domains
+          .filter((domain) => {
+            if (domain.certificate!.certId !== certInfo.body!.cert) {
+              return true;
+            } else {
+              console.log(
+                `No need to update ${domain.domain} because it already has the latest cert`
+              );
+              return false;
+            }
+          })
+          .map((domain) =>
+            updateOssDomain(domain.domain!, certName, certInfo, context)
+          ),
+      ]);
+    } else {
+      throw new Error(`Failed to find cert ${certName}`);
+    }
+  } else {
+    throw new Error(`Failed to check cert ${certName}`);
+  }
+}
+
+async function handleOssDomains(context: FcContext) {
+  const out1 = await Promise.all(
+    process.env.OSS_REGIONS!.split(",").map((regionId) =>
+      listOssDomains(regionId, context)
+    )
+  );
+  const out = out1.flat();
+  const map: Record<string, ListBucketCnameCname[]> = {};
+  out.forEach((c) => {
+    const certName = c.certificate!.certId!;
+    if (map[certName]) {
+      map[certName].push(c);
+    } else {
+      map[certName] = [c];
+    }
+  });
+
+  const requests: Promise<void>[] = [];
+  if (Object.keys(map).length === 0) {
+    console.log("oss: no fc-certbot app created certs found");
+  }
+  Object.keys(map).forEach(async (certName) => {
+    const domain = map[certName]!;
+    console.log(
+      `found cert ${certName} is used by oss domains: ${domain
+        .map((c) => c.domain!)
+        .join(", ")}.`
+    );
+    requests.push(updateOssDomains(certName, domain, context));
+  });
+  await Promise.all(requests);
+}
+
 export async function handler(event: any, context: FcContext, callback: (arg0: null, arg1: string) => void) {
   CERT_GENERATOR_FUNCTION_NAME = process.env.CERT_GENERATOR_FUNCTION_NAME!;
   await handleCustomDomains(context);
   await handleCdnDomains(context);
+  // await handleOssDomains(context);
   callback(null, "done");
 };
