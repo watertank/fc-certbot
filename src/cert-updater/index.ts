@@ -58,6 +58,7 @@ function getOssClient(regionId: string, context: FcContext) {
   return new OssClient({
     accessKeyId: context.credentials.accessKeyId,
     accessKeySecret: context.credentials.accessKeySecret,
+    securityToken: context.credentials.securityToken,
     region: regionId,
     endpoint: endpoint,
   });

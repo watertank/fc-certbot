@@ -5,6 +5,8 @@
 export interface Options {
   accessKeyId: string;
   accessKeySecret: string;
+  /** Optional STS security token, required when using temporary credentials. */
+  securityToken?: string;
   region: string;
   bucket?: string;
   /** Optional endpoint, e.g. `https://oss-cn-hangzhou.aliyuncs.com` or a custom domain. Defaults to auto-built from bucket + region. */

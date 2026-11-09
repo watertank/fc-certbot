@@ -32,7 +32,7 @@ export function escapePath(path: string): string {
   const bytes = Buffer.from(path, "utf8");
   let buf = "";
   for (let i = 0; i < bytes.length; i++) {
-    const c = bytes[i];
+    const c = bytes[i]!;
     const noEscape =
       (c >= 0x41 && c <= 0x5a) || // A-Z
       (c >= 0x61 && c <= 0x7a) || // a-z
@@ -56,6 +56,7 @@ export class Signer {
     private readonly accessKeyId: string,
     private readonly accessKeySecret: string,
     private readonly region: string,
+    private readonly securityToken?: string,
   ) {}
 
   sign(req: SignableRequest, now: Date = new Date()): void {
@@ -68,6 +69,12 @@ export class Signer {
 
     const requestResStr = req.headers.get("X-API-Resource");
     req.headers.delete("X-API-Resource");
+
+    // STS temporary credentials must send the security token, and the V4
+    // signature must cover it (it is an x-oss-* header).
+    if (this.securityToken) {
+      req.headers.set("X-OSS-Security-Token", this.securityToken);
+    }
 
     // Go's url.Parse decodes URL.Path; escapePath then re-encodes it.
     let decodedPath = req.url.pathname;
@@ -91,7 +98,7 @@ export class Signer {
       if (i > 0) {
         canonicalQueryStr += "&";
       }
-      const key = queryKeys[i];
+      const key = queryKeys[i]!;
       const value = req.url.searchParams.get(key) ?? "";
       if (value === "") {
         canonicalQueryStr += escapeQuery(key);
@@ -125,7 +132,7 @@ export class Signer {
         if (i > 0) {
           canonicalHeaders += "\n";
         }
-        const value = (req.headers.get(keys[i]) ?? "").trim();
+        const value = (req.headers.get(keys[i]!) ?? "").trim();
         canonicalHeaders += keys[i] + ":" + value;
       }
       canonicalHeaders += "\n";

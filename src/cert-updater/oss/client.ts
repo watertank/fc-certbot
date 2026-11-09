@@ -4,9 +4,9 @@
 
 import { createHash } from "node:crypto";
 import { HeadersMap } from "./headers.ts";
-import { Options } from "./options.ts";
+import { type Options } from "./options.ts";
 import { Signer } from "./signer.ts";
-import { marshalXml, parseXml, XmlRecord } from "./xml.ts";
+import { marshalXml, parseXml, type XmlRecord } from "./xml.ts";
 
 const DEFAULT_USER_AGENT = "ali-oss-ts/0.1.0";
 
@@ -58,7 +58,7 @@ export class Client {
 
     this.bucket = opts.bucket;
     this.baseUrl = endpoint;
-    this.signer = new Signer(opts.accessKeyId, opts.accessKeySecret, opts.region);
+    this.signer = new Signer(opts.accessKeyId, opts.accessKeySecret, opts.region, opts.securityToken);
   }
 
   setUserAgent(userAgent: string): this {
