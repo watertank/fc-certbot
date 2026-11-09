@@ -8,7 +8,7 @@ import { Config } from "@alicloud/openapi-client";
 import Util, { RuntimeOptions } from "@alicloud/tea-util";
 import Stream from "@alicloud/darabonba-stream";
 import _ from "lodash";
-import { Client as OssClient, type ListBucketCnameCname, type ListBucketCnameResponse, type PutBucketCnameRequest } from "./oss";
+import { Client as OssClient, type ListBucketCnameCname, type PutBucketCnameRequest } from "./oss";
 
 const runtime = new RuntimeOptions({});
 
@@ -53,9 +53,10 @@ function getCdnClient(context: FcContext) {
   );
 }
 
-function getOssClient(regionId: string, context: FcContext) {
+function getOssClient(regionId: string, context: FcContext, bucket?: string) {
   let endpoint = `oss-${regionId}${(regionId === context.region) ? "-internal" : ""}.aliyuncs.com`;
   return new OssClient({
+    bucket: bucket,
     accessKeyId: context.credentials.accessKeyId,
     accessKeySecret: context.credentials.accessKeySecret,
     securityToken: context.credentials.securityToken,
@@ -413,14 +414,28 @@ async function handleCdnDomains(context: FcContext) {
   await Promise.all(requests);
 }
 
+type BucketCname = {
+  bucket?: string,
+  cname: ListBucketCnameCname,
+};
+
 async function listOssDomains(regionId: string, context: FcContext) {
   const client = getOssClient(regionId, context);
   const result = await client.listBucketCname();
-  return result.cname || [];
+  if (!result.cname) {
+    return [];
+  }
+  return result.cname.map(c => {
+    return {
+      bucket: result.bucket,
+      cname: c,
+    } as BucketCname;
+  });
 }
 
-async function updateOssDomain(domainName: string, certName: string, certInfo: GetUserCertificateDetailResponse, context: FcContext) {
-  const client = getOssClient("", context);
+async function updateOssDomain(domain: BucketCname, certName: string, certInfo: GetUserCertificateDetailResponse, context: FcContext) {
+  const client = getOssClient("", context, domain.bucket);
+  const domainName = domain.cname.domain!;
   const request: PutBucketCnameRequest = {
     cname: {
       domain: domainName,
@@ -430,11 +445,11 @@ async function updateOssDomain(domainName: string, certName: string, certInfo: G
   console.log(`oss: update cert for ${domainName} success`);
 }
 
-async function updateOssDomains(certName: string, domains: ListBucketCnameCname[], context: FcContext) {
+async function updateOssDomains(certName: string, domains: BucketCname[], context: FcContext) {
   const fcClient = getFcClient(context.region, context);
   const casClient = getCasClient(context);
   const domainNames = _.uniq(
-    domains.map((domain) => domain.domain!)
+    domains.map((domain) => domain.cname.domain!)
   );
   let domainName = domainNames[0]!;
   if (certName.startsWith(CERT_WILDCARD_PREFIX)) {
@@ -471,17 +486,17 @@ async function updateOssDomains(certName: string, domains: ListBucketCnameCname[
       await Promise.all([
         ...domains
           .filter((domain) => {
-            if (domain.certificate!.certId !== certInfo.body!.cert) {
+            if (domain.cname.certificate!.certId !== certInfo.body!.cert) {
               return true;
             } else {
               console.log(
-                `No need to update ${domain.domain} because it already has the latest cert`
+                `No need to update ${domain.cname.domain} because it already has the latest cert`
               );
               return false;
             }
           })
           .map((domain) =>
-            updateOssDomain(domain.domain!, certName, certInfo, context)
+            updateOssDomain(domain, certName, certInfo, context)
           ),
       ]);
     } else {
@@ -499,9 +514,9 @@ async function handleOssDomains(context: FcContext) {
     )
   );
   const out = out1.flat();
-  const map: Record<string, ListBucketCnameCname[]> = {};
+  const map: Record<string, BucketCname[]> = {};
   out.forEach((c) => {
-    const certName = c.certificate!.certId!;
+    const certName = c.cname!.certificate!.certId!;
     if (map[certName]) {
       map[certName].push(c);
     } else {
@@ -517,7 +532,7 @@ async function handleOssDomains(context: FcContext) {
     const domain = map[certName]!;
     console.log(
       `found cert ${certName} is used by oss domains: ${domain
-        .map((c) => c.domain!)
+        .map((c) => c.cname.domain!)
         .join(", ")}.`
     );
     requests.push(updateOssDomains(certName, domain, context));
