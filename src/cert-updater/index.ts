@@ -301,8 +301,7 @@ function willExpireWithin(a: Date, days: number, now: Date = new Date()): boolea
     throw new TypeError('Invalid Date');
   }
   const DAY = 24 * 60 * 60 * 1000;
-  const expireAt = ta + days * DAY;   // 过期时间点
-  return expireAt > tn && expireAt - tn <= days * DAY;
+  return tn < ta && tn + days * DAY >= ta;
 }
 
 function shouldUpdateCdnDomain(cdnDomain: CdnDomain, certInfo: GetUserCertificateDetailResponse): boolean {
